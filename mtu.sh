@@ -191,12 +191,7 @@ main() {
     check_command "ip" "iproute2"
     check_command "bc" "bc"
 
-    local TARGET_IP=""
-    if [ -z "$1" ]; then
-        read -rp "${YELLOW}Enter target IP address (IPv4 or IPv6): ${NC}" TARGET_IP
-    else
-        TARGET_IP="$1"
-    fi
+    read -rp "${YELLOW}Enter target IP address (IPv4 or IPv6): ${NC}" TARGET_IP
 
     if [ -z "$TARGET_IP" ]; then
         print_error "No target IP provided. Exiting."
