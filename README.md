@@ -11,7 +11,7 @@ This repository contains a network MTU discovery and performance analysis script
 Run the script with a target IP address:
 
 ```bash
-./bash <(curl -Ls https://raw.githubusercontent.com/WOLFI-VPNe/mtu/main/mtu.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/WOLFI-VPNe/mtu/main/mtu.sh)
 ```
 
 Or run without arguments and enter the target IP when prompted.
