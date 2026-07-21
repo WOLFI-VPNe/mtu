@@ -43,9 +43,10 @@ is_ipv4() {
 }
 
 is_ipv6() {
-    [[ "$1" =~ ^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$ ]] || \
-    [[ "$1" =~ ^((([0-9a-fA-F]{1,4}:){1,6}:)|(::([0-9a-fA-F]{1,4}:){1,5})|([0-9a-fA-F]{1,4}::([0-9a-fA-F]{1,4}:){1,4})|(([0-9a-fA-F]{1,4}:){1,2}::([0-9a-fA-F]{1,4}:){1,3})|(([0-9a-fA-F]{1,4}:){1,3}::([0-9a-fA-F]{1,4}:){1,2})|(([0-9a-fA-F]{1,4}:){1,4}::[0-9a-fA-F]{1,4})|(([0-9a-fA-F]{1,4}:){1,5}::)|(([0-9a-fA-F]{1,4}:){1,6}:))([0-9a-fA-F]{1,4})?(:[0-9a-fA-F]{1,4}){1,2})$ ]] || \
-    [[ "$1" =~ ^(([0-9a-fA-F]{1,4}:){1,7}|::)([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+    # Attempt to add and then delete the IP to a dummy interface (lo)
+    # This is a robust way to validate an IPv6 address format
+    ip -6 addr add "$1"/64 dev lo 2>/dev/null && \
+    ip -6 addr del "$1"/64 dev lo 2>/dev/null
 }
 
 # --- MTU Discovery Function ---
@@ -62,7 +63,7 @@ discover_mtu() {
         PROTOCOL_FLAG="-6"
         PING_CMD="ping6"
         MIN_MTU=1280
-        MAX_MTU=1500
+        MAX_MTU=1500 # Even for IPv6, path MTU can be less than 1500
     elif ! is_ipv4 "$IP"; then
         print_error "Invalid IP address: $IP"
         return 1
@@ -71,6 +72,7 @@ discover_mtu() {
     print_header "Path MTU Discovery for $IP"
     print_info "Starting MTU discovery between $MIN_MTU and $MAX_MTU..."
 
+    # Binary search for MTU
     local low=$MIN_MTU
     local high=$MAX_MTU
 
@@ -80,9 +82,9 @@ discover_mtu() {
             current_mtu=$MIN_MTU
         fi
         
-        local packet_size=$(( current_mtu - 28 ))
+        local packet_size=$(( current_mtu - 28 )) # 20 bytes IP header, 8 bytes ICMP header
         if is_ipv6 "$IP"; then
-            packet_size=$(( current_mtu - 48 ))
+            packet_size=$(( current_mtu - 48 )) # 40 bytes IPv6 header, 8 bytes ICMPv6 header
         fi
 
         if [ $packet_size -le 0 ]; then
@@ -93,20 +95,24 @@ discover_mtu() {
 
         print_info "Probing with MTU: $current_mtu (Packet size: $packet_size bytes)"
         
+        # Use -D for IPv4 to set DF bit, -M do for IPv6 to disallow fragmentation
+        # Use -c 1 for count, -W 1 for timeout
         local PING_OPTIONS="-c 1 -W 1"
         if is_ipv4 "$IP"; then
             PING_OPTIONS+=" -D -s $packet_size"
         else
+            # For ping6, -M do handles DF bit equivalent and -s sets payload size
             PING_OPTIONS+=" -M do -s $packet_size"
         fi
 
+        # Redirect stderr to /dev/null to suppress 'Frag needed and DF set' messages
         if $PING_CMD $PROTOCOL_FLAG $PING_OPTIONS "$IP" &> /dev/null; then
             print_success "Ping successful with MTU $current_mtu"
             optimal_mtu=$current_mtu
-            low=$(( current_mtu + 1 ))
+            low=$(( current_mtu + 1 )) # Try a larger MTU
         else
             print_warning "Ping failed with MTU $current_mtu (Fragmentation needed)"
-            high=$(( current_mtu - 1 ))
+            high=$(( current_mtu - 1 )) # Try a smaller MTU
         fi
     done
 
@@ -140,10 +146,9 @@ analyze_network_performance() {
     PING_RESULT=$($PING_CMD $PROTOCOL_FLAG -c 10 "$IP" | tail -n 2)
     
     local PACKET_LOSS=$(echo "$PING_RESULT" | grep -oP '\d+(?=% packet loss)')
-    local RTT_STATS=$(echo "$PING_RESULT" | grep -oP 'min/avg/max/mdev = [0-9.]+/[0-9.]+/[0-9.]+' | cut -d'=' -f2)
-    local RTT_MIN=$(echo "$RTT_STATS" | cut -d'/' -f1)
-    local RTT_AVG=$(echo "$RTT_STATS" | cut -d'/' -f2)
-    local RTT_MAX=$(echo "$RTT_STATS" | cut -d'/' -f3)
+    local RTT_MIN=$(echo "$PING_RESULT" | grep -oP 'min/avg/max/mdev = ([0-9.]+)/([0-9.]+)/([0-9.]+)' | cut -d'=' -f2 | cut -d'/' -f1)
+    local RTT_AVG=$(echo "$PING_RESULT" | grep -oP 'min/avg/max/mdev = ([0-9.]+)/([0-9.]+)/([0-9.]+)' | cut -d'=' -f2 | cut -d'/' -f2)
+    local RTT_MAX=$(echo "$PING_RESULT" | grep -oP 'min/avg/max/mdev = ([0-9.]+)/([0-9.]+)/([0-9.]+)' | cut -d'=' -f2 | cut -d'/' -f3)
 
     print_info "Ping Results:"
     echo -e "  ${CYAN}Packet Loss:${NC} ${PACKET_LOSS}%"
@@ -156,13 +161,14 @@ analyze_network_performance() {
     fi
     $TRACEROUTE_CMD -m 30 "$IP"
 
+    # Basic recommendations based on ping/traceroute
     print_header "Performance Recommendations"
-    if [ -n "$PACKET_LOSS" ] && [ "$PACKET_LOSS" -gt 0 ]; then
+    if [ "$PACKET_LOSS" -gt 0 ]; then
         print_warning "High packet loss detected (${PACKET_LOSS}%). This severely impacts performance."
         print_info "Recommendation: Investigate network congestion or routing issues. Try another server location or a VPN."
     fi
 
-    if [ -n "$RTT_AVG" ] && (( $(echo "$RTT_AVG > 150" | bc -l) )); then
+    if (( $(echo "$RTT_AVG > 150" | bc -l) )); then
         print_warning "High average latency detected (${RTT_AVG}ms)."
         print_info "Recommendation: This might indicate a long network path. Consider a server geographically closer or a route optimization service."
     fi
