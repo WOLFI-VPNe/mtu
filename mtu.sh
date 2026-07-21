@@ -96,8 +96,8 @@ discover_mtu() {
     done
 
     if [ $optimal_mtu -gt 0 ]; then
-        print_success "Optimal Path MTU discovered: $optimal_mtu bytes"
         echo "$optimal_mtu"
+        print_success "Optimal Path MTU discovered: $optimal_mtu bytes"
     else
         print_error "Could not determine optimal MTU. Target might be unreachable."
         return 1
